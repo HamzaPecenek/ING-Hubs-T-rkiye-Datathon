@@ -1,1 +1,439 @@
-{"metadata":{"kernelspec":{"language":"python","display_name":"Python 3","name":"python3"},"language_info":{"name":"python","version":"3.11.13","mimetype":"text/x-python","codemirror_mode":{"name":"ipython","version":3},"pygments_lexer":"ipython3","nbconvert_exporter":"python","file_extension":".py"},"kaggle":{"accelerator":"none","dataSources":[{"sourceId":116092,"databundleVersionId":13860829,"sourceType":"competition"}],"dockerImageVersionId":31153,"isInternetEnabled":true,"language":"python","sourceType":"notebook","isGpuEnabled":false}},"nbformat_minor":4,"nbformat":4,"cells":[{"cell_type":"code","source":"# ===============================================================\n# 🧠 ING Hubs Türkiye Datathon - Baseline Notebook\n# ===============================================================\n# This notebook builds a simple baseline churn model using:\n# - demographic features from customers.csv\n# - average transaction features from customer_history.csv\n# - LightGBM classifier\n# ===============================================================\n\nimport pandas as pd\nimport numpy as np\nfrom lightgbm import LGBMClassifier\nfrom sklearn.model_selection import train_test_split\nfrom sklearn.metrics import roc_auc_score\nimport warnings\nimport lightgbm as lightgbm\nfrom lightgbm import LGBMClassifier\nwarnings.filterwarnings(\"ignore\")\n","metadata":{"trusted":true,"execution":{"iopub.status.busy":"2025-10-18T11:15:20.492444Z","iopub.execute_input":"2025-10-18T11:15:20.492806Z","iopub.status.idle":"2025-10-18T11:15:20.498891Z","shell.execute_reply.started":"2025-10-18T11:15:20.492781Z","shell.execute_reply":"2025-10-18T11:15:20.497774Z"}},"outputs":[],"execution_count":11},{"cell_type":"code","source":"# ===============================================================\n# 1️⃣ Load Data\n# ===============================================================\ncustomers = pd.read_csv(\"/kaggle/input/ing-hubs-turkiye-datathon/customers.csv\")\ncustomer_history = pd.read_csv(\"/kaggle/input/ing-hubs-turkiye-datathon/customer_history.csv\")\nreference_data = pd.read_csv(\"/kaggle/input/ing-hubs-turkiye-datathon/referance_data.csv\")\nreference_data_test = pd.read_csv(\"/kaggle/input/ing-hubs-turkiye-datathon/referance_data_test.csv\")\nsample_submission = pd.read_csv(\"/kaggle/input/ing-hubs-turkiye-datathon/sample_submission.csv\")\n\n","metadata":{"trusted":true,"execution":{"iopub.status.busy":"2025-10-18T11:12:28.063882Z","iopub.execute_input":"2025-10-18T11:12:28.064288Z","iopub.status.idle":"2025-10-18T11:12:34.211212Z","shell.execute_reply.started":"2025-10-18T11:12:28.064261Z","shell.execute_reply":"2025-10-18T11:12:34.209597Z"}},"outputs":[],"execution_count":3},{"cell_type":"code","source":"# ===============================================================\n# 2️⃣ Prepare Simple Aggregated History Features\n# ===============================================================\n# Aggregate each customer's average monthly behavior\nhist_agg = customer_history.groupby(\"cust_id\").agg({\n    \"mobile_eft_all_cnt\": \"mean\",\n    \"mobile_eft_all_amt\": \"mean\",\n    \"cc_transaction_all_cnt\": \"mean\",\n    \"cc_transaction_all_amt\": \"mean\",\n    \"active_product_category_nbr\": \"mean\"\n}).reset_index()\n\n","metadata":{"trusted":true,"execution":{"iopub.status.busy":"2025-10-18T11:13:24.902485Z","iopub.execute_input":"2025-10-18T11:13:24.903843Z","iopub.status.idle":"2025-10-18T11:13:25.399751Z","shell.execute_reply.started":"2025-10-18T11:13:24.903790Z","shell.execute_reply":"2025-10-18T11:13:25.398549Z"}},"outputs":[],"execution_count":4},{"cell_type":"code","source":"# ===============================================================\n# 3️⃣ Merge Train & Test Sets\n# ===============================================================\n# Train\ntrain = reference_data.merge(customers, on=\"cust_id\", how=\"left\")\ntrain = train.merge(hist_agg, on=\"cust_id\", how=\"left\")\n\n# Test\ntest = reference_data_test.merge(customers, on=\"cust_id\", how=\"left\")\ntest = test.merge(hist_agg, on=\"cust_id\", how=\"left\")\n\n","metadata":{"trusted":true,"execution":{"iopub.status.busy":"2025-10-18T11:13:33.477946Z","iopub.execute_input":"2025-10-18T11:13:33.478322Z","iopub.status.idle":"2025-10-18T11:13:33.606487Z","shell.execute_reply.started":"2025-10-18T11:13:33.478298Z","shell.execute_reply":"2025-10-18T11:13:33.605308Z"}},"outputs":[],"execution_count":5},{"cell_type":"code","source":"# ===============================================================\n# 4️⃣ Encode Categoricals (Simple Label Encoding)\n# ===============================================================\ncat_cols = [\"gender\", \"province\", \"religion\", \"work_type\", \"work_sector\"]\nfor col in cat_cols:\n    train[col] = train[col].astype(\"category\").cat.codes\n    test[col] = test[col].astype(\"category\").cat.codes\n\n","metadata":{"trusted":true,"execution":{"iopub.status.busy":"2025-10-18T11:13:40.322642Z","iopub.execute_input":"2025-10-18T11:13:40.323749Z","iopub.status.idle":"2025-10-18T11:13:40.395741Z","shell.execute_reply.started":"2025-10-18T11:13:40.323717Z","shell.execute_reply":"2025-10-18T11:13:40.394478Z"}},"outputs":[],"execution_count":6},{"cell_type":"code","source":"# ===============================================================\n# 5️⃣ Train/Validation Split\n# ===============================================================\nX = train.drop(columns=[\"cust_id\", \"ref_date\", \"churn\"])\ny = train[\"churn\"]\nX_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)\n","metadata":{"trusted":true,"execution":{"iopub.status.busy":"2025-10-18T11:13:46.389262Z","iopub.execute_input":"2025-10-18T11:13:46.389707Z","iopub.status.idle":"2025-10-18T11:13:46.464617Z","shell.execute_reply.started":"2025-10-18T11:13:46.389681Z","shell.execute_reply":"2025-10-18T11:13:46.463669Z"}},"outputs":[],"execution_count":7},{"cell_type":"code","source":"# ===============================================================\n# 6️⃣ Baseline LightGBM Model\n# ===============================================================\nmodel = LGBMClassifier(\n    n_estimators=500,\n    learning_rate=0.05,\n    max_depth=7,\n    num_leaves=32,\n    random_state=42,\n    n_jobs=-1\n)\n\nmodel.fit(\n    X_train, y_train,\n    eval_set=[(X_val, y_val)],\n    eval_metric=\"auc\",\n    callbacks=[\n        # show progress every 100 iterations\n        lightgbm.log_evaluation(period=100),\n        lightgbm.early_stopping(stopping_rounds=50)\n    ]\n)\n","metadata":{"trusted":true,"execution":{"iopub.status.busy":"2025-10-18T11:15:23.259309Z","iopub.execute_input":"2025-10-18T11:15:23.259709Z","iopub.status.idle":"2025-10-18T11:15:24.684560Z","shell.execute_reply.started":"2025-10-18T11:15:23.259683Z","shell.execute_reply":"2025-10-18T11:15:24.683446Z"}},"outputs":[{"name":"stdout","text":"[LightGBM] [Info] Number of positive: 15096, number of negative: 91533\n[LightGBM] [Info] Auto-choosing row-wise multi-threading, the overhead of testing was 0.003806 seconds.\nYou can set `force_row_wise=true` to remove the overhead.\nAnd if memory is not enough, you can set `force_col_wise=true`.\n[LightGBM] [Info] Total Bins 1639\n[LightGBM] [Info] Number of data points in the train set: 106629, number of used features: 12\n[LightGBM] [Info] [binary:BoostFromScore]: pavg=0.141575 -> initscore=-1.802270\n[LightGBM] [Info] Start training from score -1.802270\nTraining until validation scores don't improve for 50 rounds\n[100]\tvalid_0's auc: 0.702638\tvalid_0's binary_logloss: 0.374276\nEarly stopping, best iteration is:\n[61]\tvalid_0's auc: 0.703548\tvalid_0's binary_logloss: 0.374404\n","output_type":"stream"},{"execution_count":12,"output_type":"execute_result","data":{"text/plain":"LGBMClassifier(learning_rate=0.05, max_depth=7, n_estimators=500, n_jobs=-1,\n               num_leaves=32, random_state=42)","text/html":"<style>#sk-container-id-1 {color: black;background-color: white;}#sk-container-id-1 pre{padding: 0;}#sk-container-id-1 div.sk-toggleable {background-color: white;}#sk-container-id-1 label.sk-toggleable__label {cursor: pointer;display: block;width: 100%;margin-bottom: 0;padding: 0.3em;box-sizing: border-box;text-align: center;}#sk-container-id-1 label.sk-toggleable__label-arrow:before {content: \"▸\";float: left;margin-right: 0.25em;color: #696969;}#sk-container-id-1 label.sk-toggleable__label-arrow:hover:before {color: black;}#sk-container-id-1 div.sk-estimator:hover label.sk-toggleable__label-arrow:before {color: black;}#sk-container-id-1 div.sk-toggleable__content {max-height: 0;max-width: 0;overflow: hidden;text-align: left;background-color: #f0f8ff;}#sk-container-id-1 div.sk-toggleable__content pre {margin: 0.2em;color: black;border-radius: 0.25em;background-color: #f0f8ff;}#sk-container-id-1 input.sk-toggleable__control:checked~div.sk-toggleable__content {max-height: 200px;max-width: 100%;overflow: auto;}#sk-container-id-1 input.sk-toggleable__control:checked~label.sk-toggleable__label-arrow:before {content: \"▾\";}#sk-container-id-1 div.sk-estimator input.sk-toggleable__control:checked~label.sk-toggleable__label {background-color: #d4ebff;}#sk-container-id-1 div.sk-label input.sk-toggleable__control:checked~label.sk-toggleable__label {background-color: #d4ebff;}#sk-container-id-1 input.sk-hidden--visually {border: 0;clip: rect(1px 1px 1px 1px);clip: rect(1px, 1px, 1px, 1px);height: 1px;margin: -1px;overflow: hidden;padding: 0;position: absolute;width: 1px;}#sk-container-id-1 div.sk-estimator {font-family: monospace;background-color: #f0f8ff;border: 1px dotted black;border-radius: 0.25em;box-sizing: border-box;margin-bottom: 0.5em;}#sk-container-id-1 div.sk-estimator:hover {background-color: #d4ebff;}#sk-container-id-1 div.sk-parallel-item::after {content: \"\";width: 100%;border-bottom: 1px solid gray;flex-grow: 1;}#sk-container-id-1 div.sk-label:hover label.sk-toggleable__label {background-color: #d4ebff;}#sk-container-id-1 div.sk-serial::before {content: \"\";position: absolute;border-left: 1px solid gray;box-sizing: border-box;top: 0;bottom: 0;left: 50%;z-index: 0;}#sk-container-id-1 div.sk-serial {display: flex;flex-direction: column;align-items: center;background-color: white;padding-right: 0.2em;padding-left: 0.2em;position: relative;}#sk-container-id-1 div.sk-item {position: relative;z-index: 1;}#sk-container-id-1 div.sk-parallel {display: flex;align-items: stretch;justify-content: center;background-color: white;position: relative;}#sk-container-id-1 div.sk-item::before, #sk-container-id-1 div.sk-parallel-item::before {content: \"\";position: absolute;border-left: 1px solid gray;box-sizing: border-box;top: 0;bottom: 0;left: 50%;z-index: -1;}#sk-container-id-1 div.sk-parallel-item {display: flex;flex-direction: column;z-index: 1;position: relative;background-color: white;}#sk-container-id-1 div.sk-parallel-item:first-child::after {align-self: flex-end;width: 50%;}#sk-container-id-1 div.sk-parallel-item:last-child::after {align-self: flex-start;width: 50%;}#sk-container-id-1 div.sk-parallel-item:only-child::after {width: 0;}#sk-container-id-1 div.sk-dashed-wrapped {border: 1px dashed gray;margin: 0 0.4em 0.5em 0.4em;box-sizing: border-box;padding-bottom: 0.4em;background-color: white;}#sk-container-id-1 div.sk-label label {font-family: monospace;font-weight: bold;display: inline-block;line-height: 1.2em;}#sk-container-id-1 div.sk-label-container {text-align: center;}#sk-container-id-1 div.sk-container {/* jupyter's `normalize.less` sets `[hidden] { display: none; }` but bootstrap.min.css set `[hidden] { display: none !important; }` so we also need the `!important` here to be able to override the default hidden behavior on the sphinx rendered scikit-learn.org. See: https://github.com/scikit-learn/scikit-learn/issues/21755 */display: inline-block !important;position: relative;}#sk-container-id-1 div.sk-text-repr-fallback {display: none;}</style><div id=\"sk-container-id-1\" class=\"sk-top-container\"><div class=\"sk-text-repr-fallback\"><pre>LGBMClassifier(learning_rate=0.05, max_depth=7, n_estimators=500, n_jobs=-1,\n               num_leaves=32, random_state=42)</pre><b>In a Jupyter environment, please rerun this cell to show the HTML representation or trust the notebook. <br />On GitHub, the HTML representation is unable to render, please try loading this page with nbviewer.org.</b></div><div class=\"sk-container\" hidden><div class=\"sk-item\"><div class=\"sk-estimator sk-toggleable\"><input class=\"sk-toggleable__control sk-hidden--visually\" id=\"sk-estimator-id-1\" type=\"checkbox\" checked><label for=\"sk-estimator-id-1\" class=\"sk-toggleable__label sk-toggleable__label-arrow\">LGBMClassifier</label><div class=\"sk-toggleable__content\"><pre>LGBMClassifier(learning_rate=0.05, max_depth=7, n_estimators=500, n_jobs=-1,\n               num_leaves=32, random_state=42)</pre></div></div></div></div></div>"},"metadata":{}}],"execution_count":12},{"cell_type":"code","source":"# ===============================================================\n# 7️⃣ Validation Metric\n# ===============================================================\nval_preds = model.predict_proba(X_val)[:, 1]\nval_auc = roc_auc_score(y_val, val_preds)\nprint(f\"Validation ROC-AUC: {val_auc:.4f}\")\n\n","metadata":{"trusted":true,"execution":{"iopub.status.busy":"2025-10-18T11:15:38.584763Z","iopub.execute_input":"2025-10-18T11:15:38.585133Z","iopub.status.idle":"2025-10-18T11:15:38.650407Z","shell.execute_reply.started":"2025-10-18T11:15:38.585110Z","shell.execute_reply":"2025-10-18T11:15:38.649272Z"}},"outputs":[{"name":"stdout","text":"Validation ROC-AUC: 0.7035\n","output_type":"stream"}],"execution_count":13},{"cell_type":"code","source":"# ===============================================================\n# 8️⃣ Predict on Test & Create Submission\n# ===============================================================\ntest_preds = model.predict_proba(test.drop(columns=[\"cust_id\", \"ref_date\"]))[:, 1]\n\nsubmission = sample_submission.copy()\nsubmission[\"churn\"] = test_preds\nsubmission.to_csv(\"submission.csv\", index=False)\n\nprint(\"✅ Submission file created: submission.csv\")","metadata":{"trusted":true,"execution":{"iopub.status.busy":"2025-10-18T11:15:44.254436Z","iopub.execute_input":"2025-10-18T11:15:44.255748Z","iopub.status.idle":"2025-10-18T11:15:44.435324Z","shell.execute_reply.started":"2025-10-18T11:15:44.255710Z","shell.execute_reply":"2025-10-18T11:15:44.434209Z"}},"outputs":[{"name":"stdout","text":"✅ Submission file created: submission.csv\n","output_type":"stream"}],"execution_count":14},{"cell_type":"code","source":"","metadata":{"trusted":true},"outputs":[],"execution_count":null}]}
+{
+ "cells": [
+  {
+   "cell_type": "code",
+   "execution_count": 1,
+   "id": "95d6f0af",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2025-10-18T11:19:41.932732Z",
+     "iopub.status.busy": "2025-10-18T11:19:41.932410Z",
+     "iopub.status.idle": "2025-10-18T11:19:50.848711Z",
+     "shell.execute_reply": "2025-10-18T11:19:50.847820Z"
+    },
+    "papermill": {
+     "duration": 8.922731,
+     "end_time": "2025-10-18T11:19:50.850409",
+     "exception": false,
+     "start_time": "2025-10-18T11:19:41.927678",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [],
+   "source": [
+    "# ===============================================================\n",
+    "# 🧠 ING Hubs Türkiye Datathon - Baseline Notebook\n",
+    "# ===============================================================\n",
+    "# This notebook builds a simple baseline churn model using:\n",
+    "# - demographic features from customers.csv\n",
+    "# - average transaction features from customer_history.csv\n",
+    "# - LightGBM classifier\n",
+    "# ===============================================================\n",
+    "\n",
+    "import pandas as pd\n",
+    "import numpy as np\n",
+    "from lightgbm import LGBMClassifier\n",
+    "from sklearn.model_selection import train_test_split\n",
+    "from sklearn.metrics import roc_auc_score\n",
+    "import warnings\n",
+    "import lightgbm as lightgbm\n",
+    "from lightgbm import LGBMClassifier\n",
+    "warnings.filterwarnings(\"ignore\")\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 2,
+   "id": "22ec3fbd",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2025-10-18T11:19:50.857416Z",
+     "iopub.status.busy": "2025-10-18T11:19:50.856662Z",
+     "iopub.status.idle": "2025-10-18T11:19:56.861232Z",
+     "shell.execute_reply": "2025-10-18T11:19:56.860305Z"
+    },
+    "papermill": {
+     "duration": 6.009443,
+     "end_time": "2025-10-18T11:19:56.862779",
+     "exception": false,
+     "start_time": "2025-10-18T11:19:50.853336",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [],
+   "source": [
+    "# ===============================================================\n",
+    "# 1️⃣ Load Data\n",
+    "# ===============================================================\n",
+    "customers = pd.read_csv(\"/kaggle/input/ing-hubs-turkiye-datathon/customers.csv\")\n",
+    "customer_history = pd.read_csv(\"/kaggle/input/ing-hubs-turkiye-datathon/customer_history.csv\")\n",
+    "reference_data = pd.read_csv(\"/kaggle/input/ing-hubs-turkiye-datathon/referance_data.csv\")\n",
+    "reference_data_test = pd.read_csv(\"/kaggle/input/ing-hubs-turkiye-datathon/referance_data_test.csv\")\n",
+    "sample_submission = pd.read_csv(\"/kaggle/input/ing-hubs-turkiye-datathon/sample_submission.csv\")\n",
+    "\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 3,
+   "id": "7e874c64",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2025-10-18T11:19:56.869068Z",
+     "iopub.status.busy": "2025-10-18T11:19:56.868767Z",
+     "iopub.status.idle": "2025-10-18T11:19:57.274187Z",
+     "shell.execute_reply": "2025-10-18T11:19:57.273196Z"
+    },
+    "papermill": {
+     "duration": 0.410356,
+     "end_time": "2025-10-18T11:19:57.275796",
+     "exception": false,
+     "start_time": "2025-10-18T11:19:56.865440",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [],
+   "source": [
+    "# ===============================================================\n",
+    "# 2️⃣ Prepare Simple Aggregated History Features\n",
+    "# ===============================================================\n",
+    "# Aggregate each customer's average monthly behavior\n",
+    "hist_agg = customer_history.groupby(\"cust_id\").agg({\n",
+    "    \"mobile_eft_all_cnt\": \"mean\",\n",
+    "    \"mobile_eft_all_amt\": \"mean\",\n",
+    "    \"cc_transaction_all_cnt\": \"mean\",\n",
+    "    \"cc_transaction_all_amt\": \"mean\",\n",
+    "    \"active_product_category_nbr\": \"mean\"\n",
+    "}).reset_index()\n",
+    "\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 4,
+   "id": "9d792075",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2025-10-18T11:19:57.282393Z",
+     "iopub.status.busy": "2025-10-18T11:19:57.282073Z",
+     "iopub.status.idle": "2025-10-18T11:19:57.386710Z",
+     "shell.execute_reply": "2025-10-18T11:19:57.385790Z"
+    },
+    "papermill": {
+     "duration": 0.110372,
+     "end_time": "2025-10-18T11:19:57.388887",
+     "exception": false,
+     "start_time": "2025-10-18T11:19:57.278515",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [],
+   "source": [
+    "# ===============================================================\n",
+    "# 3️⃣ Merge Train & Test Sets\n",
+    "# ===============================================================\n",
+    "# Train\n",
+    "train = reference_data.merge(customers, on=\"cust_id\", how=\"left\")\n",
+    "train = train.merge(hist_agg, on=\"cust_id\", how=\"left\")\n",
+    "\n",
+    "# Test\n",
+    "test = reference_data_test.merge(customers, on=\"cust_id\", how=\"left\")\n",
+    "test = test.merge(hist_agg, on=\"cust_id\", how=\"left\")\n",
+    "\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 5,
+   "id": "8a03b111",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2025-10-18T11:19:57.395249Z",
+     "iopub.status.busy": "2025-10-18T11:19:57.394965Z",
+     "iopub.status.idle": "2025-10-18T11:19:57.458727Z",
+     "shell.execute_reply": "2025-10-18T11:19:57.457819Z"
+    },
+    "papermill": {
+     "duration": 0.069056,
+     "end_time": "2025-10-18T11:19:57.460663",
+     "exception": false,
+     "start_time": "2025-10-18T11:19:57.391607",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [],
+   "source": [
+    "# ===============================================================\n",
+    "# 4️⃣ Encode Categoricals (Simple Label Encoding)\n",
+    "# ===============================================================\n",
+    "cat_cols = [\"gender\", \"province\", \"religion\", \"work_type\", \"work_sector\"]\n",
+    "for col in cat_cols:\n",
+    "    train[col] = train[col].astype(\"category\").cat.codes\n",
+    "    test[col] = test[col].astype(\"category\").cat.codes\n",
+    "\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 6,
+   "id": "f9ac4390",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2025-10-18T11:19:57.467088Z",
+     "iopub.status.busy": "2025-10-18T11:19:57.466490Z",
+     "iopub.status.idle": "2025-10-18T11:19:57.535552Z",
+     "shell.execute_reply": "2025-10-18T11:19:57.534542Z"
+    },
+    "papermill": {
+     "duration": 0.073906,
+     "end_time": "2025-10-18T11:19:57.537181",
+     "exception": false,
+     "start_time": "2025-10-18T11:19:57.463275",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [],
+   "source": [
+    "# ===============================================================\n",
+    "# 5️⃣ Train/Validation Split\n",
+    "# ===============================================================\n",
+    "X = train.drop(columns=[\"cust_id\", \"ref_date\", \"churn\"])\n",
+    "y = train[\"churn\"]\n",
+    "X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 7,
+   "id": "a308506f",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2025-10-18T11:19:57.543394Z",
+     "iopub.status.busy": "2025-10-18T11:19:57.543118Z",
+     "iopub.status.idle": "2025-10-18T11:19:58.597284Z",
+     "shell.execute_reply": "2025-10-18T11:19:58.596351Z"
+    },
+    "papermill": {
+     "duration": 1.058999,
+     "end_time": "2025-10-18T11:19:58.598753",
+     "exception": false,
+     "start_time": "2025-10-18T11:19:57.539754",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "[LightGBM] [Info] Number of positive: 15096, number of negative: 91533\n",
+      "[LightGBM] [Info] Auto-choosing row-wise multi-threading, the overhead of testing was 0.003139 seconds.\n",
+      "You can set `force_row_wise=true` to remove the overhead.\n",
+      "And if memory is not enough, you can set `force_col_wise=true`.\n",
+      "[LightGBM] [Info] Total Bins 1639\n",
+      "[LightGBM] [Info] Number of data points in the train set: 106629, number of used features: 12\n",
+      "[LightGBM] [Info] [binary:BoostFromScore]: pavg=0.141575 -> initscore=-1.802270\n",
+      "[LightGBM] [Info] Start training from score -1.802270\n",
+      "Training until validation scores don't improve for 50 rounds\n",
+      "[100]\tvalid_0's auc: 0.702638\tvalid_0's binary_logloss: 0.374276\n",
+      "Early stopping, best iteration is:\n",
+      "[61]\tvalid_0's auc: 0.703548\tvalid_0's binary_logloss: 0.374404\n"
+     ]
+    },
+    {
+     "data": {
+      "text/html": [
+       "<style>#sk-container-id-1 {color: black;background-color: white;}#sk-container-id-1 pre{padding: 0;}#sk-container-id-1 div.sk-toggleable {background-color: white;}#sk-container-id-1 label.sk-toggleable__label {cursor: pointer;display: block;width: 100%;margin-bottom: 0;padding: 0.3em;box-sizing: border-box;text-align: center;}#sk-container-id-1 label.sk-toggleable__label-arrow:before {content: \"▸\";float: left;margin-right: 0.25em;color: #696969;}#sk-container-id-1 label.sk-toggleable__label-arrow:hover:before {color: black;}#sk-container-id-1 div.sk-estimator:hover label.sk-toggleable__label-arrow:before {color: black;}#sk-container-id-1 div.sk-toggleable__content {max-height: 0;max-width: 0;overflow: hidden;text-align: left;background-color: #f0f8ff;}#sk-container-id-1 div.sk-toggleable__content pre {margin: 0.2em;color: black;border-radius: 0.25em;background-color: #f0f8ff;}#sk-container-id-1 input.sk-toggleable__control:checked~div.sk-toggleable__content {max-height: 200px;max-width: 100%;overflow: auto;}#sk-container-id-1 input.sk-toggleable__control:checked~label.sk-toggleable__label-arrow:before {content: \"▾\";}#sk-container-id-1 div.sk-estimator input.sk-toggleable__control:checked~label.sk-toggleable__label {background-color: #d4ebff;}#sk-container-id-1 div.sk-label input.sk-toggleable__control:checked~label.sk-toggleable__label {background-color: #d4ebff;}#sk-container-id-1 input.sk-hidden--visually {border: 0;clip: rect(1px 1px 1px 1px);clip: rect(1px, 1px, 1px, 1px);height: 1px;margin: -1px;overflow: hidden;padding: 0;position: absolute;width: 1px;}#sk-container-id-1 div.sk-estimator {font-family: monospace;background-color: #f0f8ff;border: 1px dotted black;border-radius: 0.25em;box-sizing: border-box;margin-bottom: 0.5em;}#sk-container-id-1 div.sk-estimator:hover {background-color: #d4ebff;}#sk-container-id-1 div.sk-parallel-item::after {content: \"\";width: 100%;border-bottom: 1px solid gray;flex-grow: 1;}#sk-container-id-1 div.sk-label:hover label.sk-toggleable__label {background-color: #d4ebff;}#sk-container-id-1 div.sk-serial::before {content: \"\";position: absolute;border-left: 1px solid gray;box-sizing: border-box;top: 0;bottom: 0;left: 50%;z-index: 0;}#sk-container-id-1 div.sk-serial {display: flex;flex-direction: column;align-items: center;background-color: white;padding-right: 0.2em;padding-left: 0.2em;position: relative;}#sk-container-id-1 div.sk-item {position: relative;z-index: 1;}#sk-container-id-1 div.sk-parallel {display: flex;align-items: stretch;justify-content: center;background-color: white;position: relative;}#sk-container-id-1 div.sk-item::before, #sk-container-id-1 div.sk-parallel-item::before {content: \"\";position: absolute;border-left: 1px solid gray;box-sizing: border-box;top: 0;bottom: 0;left: 50%;z-index: -1;}#sk-container-id-1 div.sk-parallel-item {display: flex;flex-direction: column;z-index: 1;position: relative;background-color: white;}#sk-container-id-1 div.sk-parallel-item:first-child::after {align-self: flex-end;width: 50%;}#sk-container-id-1 div.sk-parallel-item:last-child::after {align-self: flex-start;width: 50%;}#sk-container-id-1 div.sk-parallel-item:only-child::after {width: 0;}#sk-container-id-1 div.sk-dashed-wrapped {border: 1px dashed gray;margin: 0 0.4em 0.5em 0.4em;box-sizing: border-box;padding-bottom: 0.4em;background-color: white;}#sk-container-id-1 div.sk-label label {font-family: monospace;font-weight: bold;display: inline-block;line-height: 1.2em;}#sk-container-id-1 div.sk-label-container {text-align: center;}#sk-container-id-1 div.sk-container {/* jupyter's `normalize.less` sets `[hidden] { display: none; }` but bootstrap.min.css set `[hidden] { display: none !important; }` so we also need the `!important` here to be able to override the default hidden behavior on the sphinx rendered scikit-learn.org. See: https://github.com/scikit-learn/scikit-learn/issues/21755 */display: inline-block !important;position: relative;}#sk-container-id-1 div.sk-text-repr-fallback {display: none;}</style><div id=\"sk-container-id-1\" class=\"sk-top-container\"><div class=\"sk-text-repr-fallback\"><pre>LGBMClassifier(learning_rate=0.05, max_depth=7, n_estimators=500, n_jobs=-1,\n",
+       "               num_leaves=32, random_state=42)</pre><b>In a Jupyter environment, please rerun this cell to show the HTML representation or trust the notebook. <br />On GitHub, the HTML representation is unable to render, please try loading this page with nbviewer.org.</b></div><div class=\"sk-container\" hidden><div class=\"sk-item\"><div class=\"sk-estimator sk-toggleable\"><input class=\"sk-toggleable__control sk-hidden--visually\" id=\"sk-estimator-id-1\" type=\"checkbox\" checked><label for=\"sk-estimator-id-1\" class=\"sk-toggleable__label sk-toggleable__label-arrow\">LGBMClassifier</label><div class=\"sk-toggleable__content\"><pre>LGBMClassifier(learning_rate=0.05, max_depth=7, n_estimators=500, n_jobs=-1,\n",
+       "               num_leaves=32, random_state=42)</pre></div></div></div></div></div>"
+      ],
+      "text/plain": [
+       "LGBMClassifier(learning_rate=0.05, max_depth=7, n_estimators=500, n_jobs=-1,\n",
+       "               num_leaves=32, random_state=42)"
+      ]
+     },
+     "execution_count": 7,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "# ===============================================================\n",
+    "# 6️⃣ Baseline LightGBM Model\n",
+    "# ===============================================================\n",
+    "model = LGBMClassifier(\n",
+    "    n_estimators=500,\n",
+    "    learning_rate=0.05,\n",
+    "    max_depth=7,\n",
+    "    num_leaves=32,\n",
+    "    random_state=42,\n",
+    "    n_jobs=-1\n",
+    ")\n",
+    "\n",
+    "model.fit(\n",
+    "    X_train, y_train,\n",
+    "    eval_set=[(X_val, y_val)],\n",
+    "    eval_metric=\"auc\",\n",
+    "    callbacks=[\n",
+    "        # show progress every 100 iterations\n",
+    "        lightgbm.log_evaluation(period=100),\n",
+    "        lightgbm.early_stopping(stopping_rounds=50)\n",
+    "    ]\n",
+    ")\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 8,
+   "id": "549b2020",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2025-10-18T11:19:58.605445Z",
+     "iopub.status.busy": "2025-10-18T11:19:58.605129Z",
+     "iopub.status.idle": "2025-10-18T11:19:58.661831Z",
+     "shell.execute_reply": "2025-10-18T11:19:58.660794Z"
+    },
+    "papermill": {
+     "duration": 0.061617,
+     "end_time": "2025-10-18T11:19:58.663250",
+     "exception": false,
+     "start_time": "2025-10-18T11:19:58.601633",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Validation ROC-AUC: 0.7035\n"
+     ]
+    }
+   ],
+   "source": [
+    "# ===============================================================\n",
+    "# 7️⃣ Validation Metric\n",
+    "# ===============================================================\n",
+    "val_preds = model.predict_proba(X_val)[:, 1]\n",
+    "val_auc = roc_auc_score(y_val, val_preds)\n",
+    "print(f\"Validation ROC-AUC: {val_auc:.4f}\")\n",
+    "\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 9,
+   "id": "3778d681",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2025-10-18T11:19:58.670196Z",
+     "iopub.status.busy": "2025-10-18T11:19:58.669653Z",
+     "iopub.status.idle": "2025-10-18T11:19:58.837211Z",
+     "shell.execute_reply": "2025-10-18T11:19:58.836045Z"
+    },
+    "papermill": {
+     "duration": 0.172436,
+     "end_time": "2025-10-18T11:19:58.838644",
+     "exception": false,
+     "start_time": "2025-10-18T11:19:58.666208",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "✅ Submission file created: submission.csv\n"
+     ]
+    }
+   ],
+   "source": [
+    "# ===============================================================\n",
+    "# 8️⃣ Predict on Test & Create Submission\n",
+    "# ===============================================================\n",
+    "test_preds = model.predict_proba(test.drop(columns=[\"cust_id\", \"ref_date\"]))[:, 1]\n",
+    "\n",
+    "submission = sample_submission.copy()\n",
+    "submission[\"churn\"] = test_preds\n",
+    "submission.to_csv(\"submission.csv\", index=False)\n",
+    "\n",
+    "print(\"✅ Submission file created: submission.csv\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "baff6650",
+   "metadata": {
+    "papermill": {
+     "duration": 0.00262,
+     "end_time": "2025-10-18T11:19:58.844157",
+     "exception": false,
+     "start_time": "2025-10-18T11:19:58.841537",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [],
+   "source": []
+  }
+ ],
+ "metadata": {
+  "kaggle": {
+   "accelerator": "none",
+   "dataSources": [
+    {
+     "databundleVersionId": 13860829,
+     "sourceId": 116092,
+     "sourceType": "competition"
+    }
+   ],
+   "dockerImageVersionId": 31153,
+   "isGpuEnabled": false,
+   "isInternetEnabled": true,
+   "language": "python",
+   "sourceType": "notebook"
+  },
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.11.13"
+  },
+  "papermill": {
+   "default_parameters": {},
+   "duration": 22.453243,
+   "end_time": "2025-10-18T11:19:59.775622",
+   "environment_variables": {},
+   "exception": null,
+   "input_path": "__notebook__.ipynb",
+   "output_path": "__notebook__.ipynb",
+   "parameters": {},
+   "start_time": "2025-10-18T11:19:37.322379",
+   "version": "2.6.0"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}
