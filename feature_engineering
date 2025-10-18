@@ -1,0 +1,873 @@
+{
+ "cells": [
+  {
+   "cell_type": "code",
+   "execution_count": 1,
+   "id": "6451b50f",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2025-10-18T14:02:54.587234Z",
+     "iopub.status.busy": "2025-10-18T14:02:54.586806Z",
+     "iopub.status.idle": "2025-10-18T14:03:02.747762Z",
+     "shell.execute_reply": "2025-10-18T14:03:02.746409Z"
+    },
+    "papermill": {
+     "duration": 8.167196,
+     "end_time": "2025-10-18T14:03:02.749584",
+     "exception": false,
+     "start_time": "2025-10-18T14:02:54.582388",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "✅ Data loaded successfully!\n",
+      "customers                 → (176293, 8)\n",
+      "customer_history          → (5359609, 7)\n",
+      "reference_data            → (133287, 3)\n",
+      "reference_data_test       → (43006, 2)\n"
+     ]
+    }
+   ],
+   "source": [
+    "# ===============================================================\n",
+    "# 📦 Load Data (same as in EDA)\n",
+    "# ===============================================================\n",
+    "import pandas as pd\n",
+    "import numpy as np\n",
+    "\n",
+    "customers = pd.read_csv(\"/kaggle/input/ing-hubs-turkiye-datathon/customers.csv\")\n",
+    "customer_history = pd.read_csv(\"/kaggle/input/ing-hubs-turkiye-datathon/customer_history.csv\")\n",
+    "reference_data = pd.read_csv(\"/kaggle/input/ing-hubs-turkiye-datathon/referance_data.csv\")\n",
+    "reference_data_test = pd.read_csv(\"/kaggle/input/ing-hubs-turkiye-datathon/referance_data_test.csv\")\n",
+    "sample_submission = pd.read_csv(\"/kaggle/input/ing-hubs-turkiye-datathon/sample_submission.csv\")\n",
+    "\n",
+    "print(\"✅ Data loaded successfully!\")\n",
+    "for name, df in {\n",
+    "    \"customers\": customers,\n",
+    "    \"customer_history\": customer_history,\n",
+    "    \"reference_data\": reference_data,\n",
+    "    \"reference_data_test\": reference_data_test\n",
+    "}.items():\n",
+    "    print(f\"{name:25} → {df.shape}\")\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 2,
+   "id": "f174591b",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2025-10-18T14:03:02.756631Z",
+     "iopub.status.busy": "2025-10-18T14:03:02.756313Z",
+     "iopub.status.idle": "2025-10-18T14:03:02.807812Z",
+     "shell.execute_reply": "2025-10-18T14:03:02.806879Z"
+    },
+    "papermill": {
+     "duration": 0.057112,
+     "end_time": "2025-10-18T14:03:02.809537",
+     "exception": false,
+     "start_time": "2025-10-18T14:03:02.752425",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [],
+   "source": [
+    "import pandas as pd\n",
+    "import numpy as np\n",
+    "from tqdm import tqdm\n",
+    "tqdm.pandas()\n",
+    "\n",
+    "def build_features(reference_df, customer_history, customers, windows=[1, 3, 6]):\n",
+    "    \"\"\"\n",
+    "    Build leak-free customer-level features aligned with ref_date.\n",
+    "    Optimized version with vectorized slope calculation and tqdm progress.\n",
+    "    \"\"\"\n",
+    "    # --- Prepare data ---\n",
+    "    df_ref = reference_df.copy()\n",
+    "    df_hist = customer_history.copy()\n",
+    "    df_ref[\"ref_date\"] = pd.to_datetime(df_ref[\"ref_date\"])\n",
+    "    df_hist[\"date\"] = pd.to_datetime(df_hist[\"date\"])\n",
+    "\n",
+    "    num_cols = [\n",
+    "        \"mobile_eft_all_cnt\", \"mobile_eft_all_amt\",\n",
+    "        \"cc_transaction_all_cnt\", \"cc_transaction_all_amt\",\n",
+    "        \"active_product_category_nbr\"\n",
+    "    ]\n",
+    "\n",
+    "    feature_list = []\n",
+    "\n",
+    "    print(\"🧱 Building multi-window aggregates...\")\n",
+    "    for w in tqdm(windows, desc=\"Windows\"):\n",
+    "        temp = df_ref[[\"cust_id\", \"ref_date\"]].copy()\n",
+    "        merged = temp.merge(df_hist, on=\"cust_id\", how=\"left\")\n",
+    "\n",
+    "        mask = (merged[\"date\"] < merged[\"ref_date\"]) & \\\n",
+    "               (merged[\"date\"] >= merged[\"ref_date\"] - pd.DateOffset(months=w))\n",
+    "        merged = merged[mask]\n",
+    "\n",
+    "        # Aggregations\n",
+    "        agg = merged.groupby(\"cust_id\")[num_cols].agg([\"mean\", \"std\", \"min\", \"max\"])\n",
+    "        agg.columns = [\"_\".join([col, stat, f\"{w}m\"]) for col, stat in agg.columns]\n",
+    "        agg = agg.reset_index()\n",
+    "\n",
+    "        temp = temp.merge(agg, on=\"cust_id\", how=\"left\")\n",
+    "        feature_list.append(temp)\n",
+    "\n",
+    "    # Combine windows\n",
+    "    print(\"🔗 Merging window features...\")\n",
+    "    features = feature_list[0]\n",
+    "    for extra in feature_list[1:]:\n",
+    "        features = features.merge(extra, on=[\"cust_id\", \"ref_date\"], how=\"left\")\n",
+    "\n",
+    "    # Derived ratios\n",
+    "    print(\"⚙️ Creating ratio-based features...\")\n",
+    "    for w in windows:\n",
+    "        features[f\"eft_to_cc_cnt_ratio_{w}m\"] = (\n",
+    "            features.get(f\"mobile_eft_all_cnt_mean_{w}m\", 0) /\n",
+    "            (features.get(f\"cc_transaction_all_cnt_mean_{w}m\", 0) + 1)\n",
+    "        )\n",
+    "        features[f\"eft_to_cc_amt_ratio_{w}m\"] = (\n",
+    "            features.get(f\"mobile_eft_all_amt_mean_{w}m\", 0) /\n",
+    "            (features.get(f\"cc_transaction_all_amt_mean_{w}m\", 0) + 1)\n",
+    "        )\n",
+    "        features[f\"amt_per_tx_{w}m\"] = (\n",
+    "            (features.get(f\"mobile_eft_all_amt_mean_{w}m\", 0) +\n",
+    "             features.get(f\"cc_transaction_all_amt_mean_{w}m\", 0)) /\n",
+    "            (features.get(f\"mobile_eft_all_cnt_mean_{w}m\", 0) +\n",
+    "             features.get(f\"cc_transaction_all_cnt_mean_{w}m\", 0) + 1)\n",
+    "        )\n",
+    "\n",
+    "    # --- Vectorized slope computation ---\n",
+    "    print(\"📈 Computing fast slopes (vectorized)...\")\n",
+    "\n",
+    "    # Prepare history at monthly granularity\n",
+    "    df_hist[\"month\"] = df_hist[\"date\"].dt.to_period(\"M\")\n",
+    "    monthly = df_hist.groupby([\"cust_id\", \"month\"]).agg({\n",
+    "        \"mobile_eft_all_cnt\": \"mean\",\n",
+    "        \"cc_transaction_all_cnt\": \"mean\",\n",
+    "        \"cc_transaction_all_amt\": \"mean\"\n",
+    "    }).reset_index()\n",
+    "\n",
+    "    # Convert month to numeric index per customer\n",
+    "    monthly[\"month_idx\"] = monthly.groupby(\"cust_id\")[\"month\"].transform(\n",
+    "        lambda x: (x - x.min()).apply(lambda p: p.n)\n",
+    "    ).astype(int)\n",
+    "\n",
+    "    # Compute slopes analytically (no sklearn)\n",
+    "    def compute_slope(x, y):\n",
+    "        x_mean, y_mean = np.mean(x), np.mean(y)\n",
+    "        num = np.sum((x - x_mean) * (y - y_mean))\n",
+    "        den = np.sum((x - x_mean) ** 2)\n",
+    "        return num / den if den != 0 else 0.0\n",
+    "\n",
+    "    slope_data = []\n",
+    "    for col in [\"mobile_eft_all_cnt\", \"cc_transaction_all_cnt\", \"cc_transaction_all_amt\"]:\n",
+    "        slopes = monthly.groupby(\"cust_id\").apply(\n",
+    "            lambda g: compute_slope(g[\"month_idx\"].values, g[col].fillna(0).values)\n",
+    "        ).rename(f\"{col}_slope_6m\")\n",
+    "        slope_data.append(slopes)\n",
+    "\n",
+    "    slope_df = pd.concat(slope_data, axis=1).reset_index()\n",
+    "    features = features.merge(slope_df, on=\"cust_id\", how=\"left\")\n",
+    "\n",
+    "    # --- Merge demographics ---\n",
+    "    print(\"👤 Merging demographics...\")\n",
+    "    demo = customers.copy()\n",
+    "    demo[\"age_tenure_interaction\"] = demo[\"age\"] * demo[\"tenure\"]\n",
+    "    features = features.merge(demo, on=\"cust_id\", how=\"left\")\n",
+    "\n",
+    "    # --- Add temporal context ---\n",
+    "    features[\"month_of_ref_date\"] = features[\"ref_date\"].dt.month\n",
+    "    features[\"quarter_of_ref_date\"] = features[\"ref_date\"].dt.quarter\n",
+    "    features[\"ref_year\"] = features[\"ref_date\"].dt.year\n",
+    "\n",
+    "    # Map season\n",
+    "    season_map = {\n",
+    "        12: \"Winter\", 1: \"Winter\", 2: \"Winter\",\n",
+    "        3: \"Spring\", 4: \"Spring\", 5: \"Spring\",\n",
+    "        6: \"Summer\", 7: \"Summer\", 8: \"Summer\",\n",
+    "        9: \"Fall\", 10: \"Fall\", 11: \"Fall\"\n",
+    "    }\n",
+    "    features[\"season\"] = features[\"month_of_ref_date\"].map(season_map)\n",
+    "\n",
+    "    # --- Clean ---\n",
+    "    features = features.replace([np.inf, -np.inf], np.nan)\n",
+    "    features = features.fillna(0)\n",
+    "\n",
+    "    # --- Preserve churn if present ---\n",
+    "    if \"churn\" in df_ref.columns:\n",
+    "        features = features.merge(df_ref[[\"cust_id\", \"ref_date\", \"churn\"]],\n",
+    "                                  on=[\"cust_id\", \"ref_date\"], how=\"left\")\n",
+    "\n",
+    "    print(\"✅ Feature building completed successfully!\")\n",
+    "    return features\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 3,
+   "id": "75a2a76a",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2025-10-18T14:03:02.816711Z",
+     "iopub.status.busy": "2025-10-18T14:03:02.816341Z",
+     "iopub.status.idle": "2025-10-18T14:10:23.188499Z",
+     "shell.execute_reply": "2025-10-18T14:10:23.186890Z"
+    },
+    "papermill": {
+     "duration": 440.377959,
+     "end_time": "2025-10-18T14:10:23.190649",
+     "exception": false,
+     "start_time": "2025-10-18T14:03:02.812690",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "🚀 Starting optimized feature generation...\n",
+      "🧱 Building multi-window aggregates...\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "Windows: 100%|██████████| 3/3 [00:03<00:00,  1.01s/it]\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "🔗 Merging window features...\n",
+      "⚙️ Creating ratio-based features...\n",
+      "📈 Computing fast slopes (vectorized)...\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "/tmp/ipykernel_13/2371009722.py:91: DeprecationWarning: DataFrameGroupBy.apply operated on the grouping columns. This behavior is deprecated, and in a future version of pandas the grouping columns will be excluded from the operation. Either pass `include_groups=False` to exclude the groupings or explicitly select the grouping columns after groupby to silence this warning.\n",
+      "  slopes = monthly.groupby(\"cust_id\").apply(\n",
+      "/tmp/ipykernel_13/2371009722.py:91: DeprecationWarning: DataFrameGroupBy.apply operated on the grouping columns. This behavior is deprecated, and in a future version of pandas the grouping columns will be excluded from the operation. Either pass `include_groups=False` to exclude the groupings or explicitly select the grouping columns after groupby to silence this warning.\n",
+      "  slopes = monthly.groupby(\"cust_id\").apply(\n",
+      "/tmp/ipykernel_13/2371009722.py:91: DeprecationWarning: DataFrameGroupBy.apply operated on the grouping columns. This behavior is deprecated, and in a future version of pandas the grouping columns will be excluded from the operation. Either pass `include_groups=False` to exclude the groupings or explicitly select the grouping columns after groupby to silence this warning.\n",
+      "  slopes = monthly.groupby(\"cust_id\").apply(\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "👤 Merging demographics...\n",
+      "✅ Feature building completed successfully!\n",
+      "🧱 Building multi-window aggregates...\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "Windows: 100%|██████████| 3/3 [00:01<00:00,  2.00it/s]\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "🔗 Merging window features...\n",
+      "⚙️ Creating ratio-based features...\n",
+      "📈 Computing fast slopes (vectorized)...\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "/tmp/ipykernel_13/2371009722.py:91: DeprecationWarning: DataFrameGroupBy.apply operated on the grouping columns. This behavior is deprecated, and in a future version of pandas the grouping columns will be excluded from the operation. Either pass `include_groups=False` to exclude the groupings or explicitly select the grouping columns after groupby to silence this warning.\n",
+      "  slopes = monthly.groupby(\"cust_id\").apply(\n",
+      "/tmp/ipykernel_13/2371009722.py:91: DeprecationWarning: DataFrameGroupBy.apply operated on the grouping columns. This behavior is deprecated, and in a future version of pandas the grouping columns will be excluded from the operation. Either pass `include_groups=False` to exclude the groupings or explicitly select the grouping columns after groupby to silence this warning.\n",
+      "  slopes = monthly.groupby(\"cust_id\").apply(\n",
+      "/tmp/ipykernel_13/2371009722.py:91: DeprecationWarning: DataFrameGroupBy.apply operated on the grouping columns. This behavior is deprecated, and in a future version of pandas the grouping columns will be excluded from the operation. Either pass `include_groups=False` to exclude the groupings or explicitly select the grouping columns after groupby to silence this warning.\n",
+      "  slopes = monthly.groupby(\"cust_id\").apply(\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "👤 Merging demographics...\n",
+      "✅ Feature building completed successfully!\n",
+      "✅ Saved train/test features. Ready for modeling.\n"
+     ]
+    }
+   ],
+   "source": [
+    "from tqdm import tqdm\n",
+    "tqdm.pandas()\n",
+    "\n",
+    "print(\"🚀 Starting optimized feature generation...\")\n",
+    "\n",
+    "train_features = build_features(reference_data, customer_history, customers)\n",
+    "test_features  = build_features(reference_data_test, customer_history, customers)\n",
+    "\n",
+    "train_features.to_csv(\"train_features.csv\", index=False)\n",
+    "test_features.to_csv(\"test_features.csv\", index=False)\n",
+    "\n",
+    "print(\"✅ Saved train/test features. Ready for modeling.\")\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 4,
+   "id": "fc741135",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2025-10-18T14:10:23.201322Z",
+     "iopub.status.busy": "2025-10-18T14:10:23.200039Z",
+     "iopub.status.idle": "2025-10-18T14:10:23.845529Z",
+     "shell.execute_reply": "2025-10-18T14:10:23.844283Z"
+    },
+    "papermill": {
+     "duration": 0.652752,
+     "end_time": "2025-10-18T14:10:23.847637",
+     "exception": false,
+     "start_time": "2025-10-18T14:10:23.194885",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "\n",
+      "✅ Basic Info\n",
+      "Train Shape: (133287, 87)\n",
+      "Test Shape:  (43006, 86)\n",
+      "\n",
+      "🔍 Missing Values:\n",
+      "Train missing: 0\n",
+      "Test missing:  0\n",
+      "\n",
+      "♾️ Infinite Values:\n",
+      "Train infinite: 0\n",
+      "Test infinite:  0\n",
+      "\n",
+      "📈 Top correlations with churn:\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "/usr/local/lib/python3.11/dist-packages/numpy/lib/function_base.py:2897: RuntimeWarning: invalid value encountered in divide\n",
+      "  c /= stddev[:, None]\n",
+      "/usr/local/lib/python3.11/dist-packages/numpy/lib/function_base.py:2898: RuntimeWarning: invalid value encountered in divide\n",
+      "  c /= stddev[None, :]\n"
+     ]
+    },
+    {
+     "data": {
+      "text/html": [
+       "<div>\n",
+       "<style scoped>\n",
+       "    .dataframe tbody tr th:only-of-type {\n",
+       "        vertical-align: middle;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe tbody tr th {\n",
+       "        vertical-align: top;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe thead th {\n",
+       "        text-align: right;\n",
+       "    }\n",
+       "</style>\n",
+       "<table border=\"1\" class=\"dataframe\">\n",
+       "  <thead>\n",
+       "    <tr style=\"text-align: right;\">\n",
+       "      <th></th>\n",
+       "      <th>Feature</th>\n",
+       "      <th>Correlation</th>\n",
+       "    </tr>\n",
+       "  </thead>\n",
+       "  <tbody>\n",
+       "    <tr>\n",
+       "      <th>0</th>\n",
+       "      <td>churn</td>\n",
+       "      <td>1.000000</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>1</th>\n",
+       "      <td>age</td>\n",
+       "      <td>0.030268</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>2</th>\n",
+       "      <td>active_product_category_nbr_std_6m</td>\n",
+       "      <td>0.027987</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>3</th>\n",
+       "      <td>age_tenure_interaction</td>\n",
+       "      <td>0.024600</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>4</th>\n",
+       "      <td>tenure</td>\n",
+       "      <td>0.018389</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>5</th>\n",
+       "      <td>active_product_category_nbr_std_3m</td>\n",
+       "      <td>0.016116</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>6</th>\n",
+       "      <td>cust_id</td>\n",
+       "      <td>0.000693</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>7</th>\n",
+       "      <td>cc_transaction_all_amt_slope_6m</td>\n",
+       "      <td>-0.000551</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>8</th>\n",
+       "      <td>cc_transaction_all_cnt_slope_6m</td>\n",
+       "      <td>-0.003754</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>9</th>\n",
+       "      <td>eft_to_cc_amt_ratio_3m</td>\n",
+       "      <td>-0.006437</td>\n",
+       "    </tr>\n",
+       "  </tbody>\n",
+       "</table>\n",
+       "</div>"
+      ],
+      "text/plain": [
+       "                              Feature  Correlation\n",
+       "0                               churn     1.000000\n",
+       "1                                 age     0.030268\n",
+       "2  active_product_category_nbr_std_6m     0.027987\n",
+       "3              age_tenure_interaction     0.024600\n",
+       "4                              tenure     0.018389\n",
+       "5  active_product_category_nbr_std_3m     0.016116\n",
+       "6                             cust_id     0.000693\n",
+       "7     cc_transaction_all_amt_slope_6m    -0.000551\n",
+       "8     cc_transaction_all_cnt_slope_6m    -0.003754\n",
+       "9              eft_to_cc_amt_ratio_3m    -0.006437"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "\n",
+      "📉 Most negatively correlated with churn:\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "/usr/local/lib/python3.11/dist-packages/pandas/io/formats/format.py:1458: RuntimeWarning: invalid value encountered in greater\n",
+      "  has_large_values = (abs_vals > 1e6).any()\n",
+      "/usr/local/lib/python3.11/dist-packages/pandas/io/formats/format.py:1459: RuntimeWarning: invalid value encountered in less\n",
+      "  has_small_values = ((abs_vals < 10 ** (-self.digits)) & (abs_vals > 0)).any()\n",
+      "/usr/local/lib/python3.11/dist-packages/pandas/io/formats/format.py:1459: RuntimeWarning: invalid value encountered in greater\n",
+      "  has_small_values = ((abs_vals < 10 ** (-self.digits)) & (abs_vals > 0)).any()\n"
+     ]
+    },
+    {
+     "data": {
+      "text/html": [
+       "<div>\n",
+       "<style scoped>\n",
+       "    .dataframe tbody tr th:only-of-type {\n",
+       "        vertical-align: middle;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe tbody tr th {\n",
+       "        vertical-align: top;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe thead th {\n",
+       "        text-align: right;\n",
+       "    }\n",
+       "</style>\n",
+       "<table border=\"1\" class=\"dataframe\">\n",
+       "  <thead>\n",
+       "    <tr style=\"text-align: right;\">\n",
+       "      <th></th>\n",
+       "      <th>Feature</th>\n",
+       "      <th>Correlation</th>\n",
+       "    </tr>\n",
+       "  </thead>\n",
+       "  <tbody>\n",
+       "    <tr>\n",
+       "      <th>0</th>\n",
+       "      <td>active_product_category_nbr_mean_1m</td>\n",
+       "      <td>-0.191493</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>1</th>\n",
+       "      <td>active_product_category_nbr_min_6m</td>\n",
+       "      <td>-0.192012</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>2</th>\n",
+       "      <td>active_product_category_nbr_min_3m</td>\n",
+       "      <td>-0.192121</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>3</th>\n",
+       "      <td>active_product_category_nbr_mean_3m</td>\n",
+       "      <td>-0.197610</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>4</th>\n",
+       "      <td>active_product_category_nbr_mean_6m</td>\n",
+       "      <td>-0.198093</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>5</th>\n",
+       "      <td>mobile_eft_all_cnt_std_1m</td>\n",
+       "      <td>NaN</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>6</th>\n",
+       "      <td>mobile_eft_all_amt_std_1m</td>\n",
+       "      <td>NaN</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>7</th>\n",
+       "      <td>cc_transaction_all_cnt_std_1m</td>\n",
+       "      <td>NaN</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>8</th>\n",
+       "      <td>cc_transaction_all_amt_std_1m</td>\n",
+       "      <td>NaN</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>9</th>\n",
+       "      <td>active_product_category_nbr_std_1m</td>\n",
+       "      <td>NaN</td>\n",
+       "    </tr>\n",
+       "  </tbody>\n",
+       "</table>\n",
+       "</div>"
+      ],
+      "text/plain": [
+       "                               Feature  Correlation\n",
+       "0  active_product_category_nbr_mean_1m    -0.191493\n",
+       "1   active_product_category_nbr_min_6m    -0.192012\n",
+       "2   active_product_category_nbr_min_3m    -0.192121\n",
+       "3  active_product_category_nbr_mean_3m    -0.197610\n",
+       "4  active_product_category_nbr_mean_6m    -0.198093\n",
+       "5            mobile_eft_all_cnt_std_1m          NaN\n",
+       "6            mobile_eft_all_amt_std_1m          NaN\n",
+       "7        cc_transaction_all_cnt_std_1m          NaN\n",
+       "8        cc_transaction_all_amt_std_1m          NaN\n",
+       "9   active_product_category_nbr_std_1m          NaN"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    }
+   ],
+   "source": [
+    "# ===============================================================\n",
+    "# 📊 Step 2 — Feature Sanity Check (Clean Version)\n",
+    "# ===============================================================\n",
+    "\n",
+    "import numpy as np\n",
+    "import pandas as pd\n",
+    "import warnings\n",
+    "warnings.filterwarnings(\"ignore\", category=DeprecationWarning)\n",
+    "\n",
+    "def sanity_check(train_df, test_df):\n",
+    "    print(\"\\n✅ Basic Info\")\n",
+    "    print(f\"Train Shape: {train_df.shape}\")\n",
+    "    print(f\"Test Shape:  {test_df.shape}\")\n",
+    "\n",
+    "    # --- Missing values ---\n",
+    "    print(\"\\n🔍 Missing Values:\")\n",
+    "    print(f\"Train missing: {train_df.isna().sum().sum():,}\")\n",
+    "    print(f\"Test missing:  {test_df.isna().sum().sum():,}\")\n",
+    "\n",
+    "    # --- Infinite values (numeric-only) ---\n",
+    "    num_train = train_df.select_dtypes(include=[np.number])\n",
+    "    num_test = test_df.select_dtypes(include=[np.number])\n",
+    "\n",
+    "    inf_train = np.isinf(num_train.to_numpy()).sum()\n",
+    "    inf_test = np.isinf(num_test.to_numpy()).sum()\n",
+    "\n",
+    "    print(\"\\n♾️ Infinite Values:\")\n",
+    "    print(f\"Train infinite: {inf_train:,}\")\n",
+    "    print(f\"Test infinite:  {inf_test:,}\")\n",
+    "\n",
+    "    # --- Quick correlation sanity check ---\n",
+    "    if \"churn\" in train_df.columns:\n",
+    "        print(\"\\n📈 Top correlations with churn:\")\n",
+    "        corrs = train_df.select_dtypes(include=[np.number]).corrwith(train_df[\"churn\"]).sort_values(ascending=False)\n",
+    "        display(pd.DataFrame({\n",
+    "            \"Feature\": corrs.index[:10],\n",
+    "            \"Correlation\": corrs.values[:10]\n",
+    "        }))\n",
+    "        print(\"\\n📉 Most negatively correlated with churn:\")\n",
+    "        display(pd.DataFrame({\n",
+    "            \"Feature\": corrs.index[-10:],\n",
+    "            \"Correlation\": corrs.values[-10:]\n",
+    "        }))\n",
+    "    else:\n",
+    "        print(\"\\n(Churn column not found — skipping correlation check.)\")\n",
+    "\n",
+    "# ===============================================================\n",
+    "# 🚀 Run the sanity check\n",
+    "# ===============================================================\n",
+    "\n",
+    "sanity_check(train_features, test_features)\n",
+    "\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 5,
+   "id": "ebfdd6d6",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2025-10-18T14:10:23.858286Z",
+     "iopub.status.busy": "2025-10-18T14:10:23.857865Z",
+     "iopub.status.idle": "2025-10-18T14:10:24.221767Z",
+     "shell.execute_reply": "2025-10-18T14:10:24.220672Z"
+    },
+    "papermill": {
+     "duration": 0.3715,
+     "end_time": "2025-10-18T14:10:24.223804",
+     "exception": false,
+     "start_time": "2025-10-18T14:10:23.852304",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "/usr/local/lib/python3.11/dist-packages/numpy/lib/function_base.py:2897: RuntimeWarning: invalid value encountered in divide\n",
+      "  c /= stddev[:, None]\n",
+      "/usr/local/lib/python3.11/dist-packages/numpy/lib/function_base.py:2898: RuntimeWarning: invalid value encountered in divide\n",
+      "  c /= stddev[None, :]\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "\n",
+      "Top 10 Features Positively Correlated with Churn:\n"
+     ]
+    },
+    {
+     "data": {
+      "text/plain": [
+       "churn                                 1.000000\n",
+       "age                                   0.030268\n",
+       "active_product_category_nbr_std_6m    0.027987\n",
+       "age_tenure_interaction                0.024600\n",
+       "tenure                                0.018389\n",
+       "active_product_category_nbr_std_3m    0.016116\n",
+       "cust_id                               0.000693\n",
+       "cc_transaction_all_amt_slope_6m      -0.000551\n",
+       "cc_transaction_all_cnt_slope_6m      -0.003754\n",
+       "eft_to_cc_amt_ratio_3m               -0.006437\n",
+       "dtype: float64"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "\n",
+      "Top 10 Features Negatively Correlated with Churn:\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "/usr/local/lib/python3.11/dist-packages/pandas/io/formats/format.py:1458: RuntimeWarning: invalid value encountered in greater\n",
+      "  has_large_values = (abs_vals > 1e6).any()\n",
+      "/usr/local/lib/python3.11/dist-packages/pandas/io/formats/format.py:1459: RuntimeWarning: invalid value encountered in less\n",
+      "  has_small_values = ((abs_vals < 10 ** (-self.digits)) & (abs_vals > 0)).any()\n",
+      "/usr/local/lib/python3.11/dist-packages/pandas/io/formats/format.py:1459: RuntimeWarning: invalid value encountered in greater\n",
+      "  has_small_values = ((abs_vals < 10 ** (-self.digits)) & (abs_vals > 0)).any()\n"
+     ]
+    },
+    {
+     "data": {
+      "text/plain": [
+       "active_product_category_nbr_mean_1m   -0.191493\n",
+       "active_product_category_nbr_min_6m    -0.192012\n",
+       "active_product_category_nbr_min_3m    -0.192121\n",
+       "active_product_category_nbr_mean_3m   -0.197610\n",
+       "active_product_category_nbr_mean_6m   -0.198093\n",
+       "mobile_eft_all_cnt_std_1m                   NaN\n",
+       "mobile_eft_all_amt_std_1m                   NaN\n",
+       "cc_transaction_all_cnt_std_1m               NaN\n",
+       "cc_transaction_all_amt_std_1m               NaN\n",
+       "active_product_category_nbr_std_1m          NaN\n",
+       "dtype: float64"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    }
+   ],
+   "source": [
+    "# ===============================================================\n",
+    "# 🔍 Step 3 — Quick Churn Correlation Check\n",
+    "# ===============================================================\n",
+    "\n",
+    "if \"churn\" in train_features.columns:\n",
+    "    num_cols = train_features.select_dtypes(include=[np.number]).columns.tolist()\n",
+    "    corr = train_features[num_cols].corrwith(train_features[\"churn\"]).sort_values(ascending=False)\n",
+    "    print(\"\\nTop 10 Features Positively Correlated with Churn:\")\n",
+    "    display(corr.head(10))\n",
+    "    print(\"\\nTop 10 Features Negatively Correlated with Churn:\")\n",
+    "    display(corr.tail(10))\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 6,
+   "id": "26907253",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2025-10-18T14:10:24.234897Z",
+     "iopub.status.busy": "2025-10-18T14:10:24.234539Z",
+     "iopub.status.idle": "2025-10-18T14:10:40.289922Z",
+     "shell.execute_reply": "2025-10-18T14:10:40.288676Z"
+    },
+    "papermill": {
+     "duration": 16.063031,
+     "end_time": "2025-10-18T14:10:40.291823",
+     "exception": false,
+     "start_time": "2025-10-18T14:10:24.228792",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "\n",
+      "💾 Saved train_features.csv and test_features.csv successfully.\n",
+      "Next: Load them into your model training notebook.\n"
+     ]
+    }
+   ],
+   "source": [
+    "# ===============================================================\n",
+    "# 💾 Step 4 — Save for Modeling\n",
+    "# ===============================================================\n",
+    "\n",
+    "train_features.to_csv(\"train_features.csv\", index=False)\n",
+    "test_features.to_csv(\"test_features.csv\", index=False)\n",
+    "\n",
+    "print(\"\\n💾 Saved train_features.csv and test_features.csv successfully.\")\n",
+    "print(\"Next: Load them into your model training notebook.\")\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "d7ccedcf",
+   "metadata": {
+    "papermill": {
+     "duration": 0.00449,
+     "end_time": "2025-10-18T14:10:40.301386",
+     "exception": false,
+     "start_time": "2025-10-18T14:10:40.296896",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [],
+   "source": []
+  }
+ ],
+ "metadata": {
+  "kaggle": {
+   "accelerator": "none",
+   "dataSources": [
+    {
+     "databundleVersionId": 13860829,
+     "sourceId": 116092,
+     "sourceType": "competition"
+    }
+   ],
+   "dockerImageVersionId": 31153,
+   "isGpuEnabled": false,
+   "isInternetEnabled": true,
+   "language": "python",
+   "sourceType": "notebook"
+  },
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.11.13"
+  },
+  "papermill": {
+   "default_parameters": {},
+   "duration": 471.761167,
+   "end_time": "2025-10-18T14:10:40.930132",
+   "environment_variables": {},
+   "exception": null,
+   "input_path": "__notebook__.ipynb",
+   "output_path": "__notebook__.ipynb",
+   "parameters": {},
+   "start_time": "2025-10-18T14:02:49.168965",
+   "version": "2.6.0"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}
